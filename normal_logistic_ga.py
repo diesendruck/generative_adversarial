@@ -1,27 +1,8 @@
 import numpy as np
 import itertools
 import sys
-
-
-def initialize_data(data_size):
-    """
-    Generates true data, x, and initial noise data, z.
-
-    Args:
-        data_size: Number of data points in original true dataset.
-
-    Returns:
-        x_labeled: True data Numpy array of size (data_size, 2), where each
-          element [x, 1] indicates value x of class 1.
-        z_labeled: Noise data Numpy array of size (data_size, 2), where each
-          element [z, 0] indicates value x of class 0.
-    """
-    mu, sigma = 5, 1
-    x = np.random.normal(mu, sigma, data_size)
-    z = np.random.normal(0, 1, data_size)
-    x_labeled = np.array([[i, 1] for i in x])  # True data gets class 1.
-    z_labeled = np.array([[j, 0] for j in z])  # Fake data gets class 0.
-    return x_labeled, z_labeled
+import pdb
+import matplotlib.pyplot as plt
 
 
 def initialize_model_params(data_size):
@@ -30,55 +11,77 @@ def initialize_model_params(data_size):
     models, respectively.
 
     Args:
-        None
+        None.
 
     Returns:
-        beta_0: Scalar, representing the initial logistic model parameter.
+        beta_0: Numpy array, representing the initial logistic model parameter.
         mu_0: Scalar, representing the initial normal model mean parameter.
     """
-    beta_0 = 0
-    mu_0 = 0
+    beta_0 = np.array([0., 0.])
+    mu_0 = 0.
     return beta_0, mu_0
 
 
-def update_discriminator(x_labeled, z_labeled, current_beta, current_mu,
-                         batch_size):
+def update_discriminator(current_beta, current_mu, batch_size):
     """
     Performs one gradient update on the logistic beta parameter.
 
     Args:
-        x_labeled: True data array of size (data_size, 2), where each element
-          [x, 1] indicates value x of class 1.
-        z_labeled: Noise data array of size (data_size, 2), where each element
-           [z, 0] indicates value x of class 0.
         current_beta: The latest beta parameter value.
         current_mu: The latest mu parameter value.
         batch_size: Number of points to sample from data.
 
     Returns:
-        updated_beta: The beta parameter value, after gradient update.
+        current_beta: The beta parameter value, after gradient update.
     """
-    x_batch = [i[0] for i in sample_batch(batch_size, x_labeled)]
-    z_batch = [i[0] for i in sample_batch(batch_size, z_labeled)]
-    beta_gradient = 0
-    for i in xrange(batch_size):
-        beta_gradient += (
-            (x_batch[i] / (1 + np.exp(x_batch[i] * current_beta))) -
-            ((current_mu + z_batch[i]) / (1 + np.exp(-current_beta * (
-                current_mu + z_batch[i])))))
-        beta_gradient += 1e-3*(current_mu - 5)
-    beta_gradient /= batch_size
-    updated_beta = current_beta + beta_gradient
-    return updated_beta
+    x_batch = np.random.normal(5, 1, batch_size)
+    z_batch = np.random.normal(0, 1, batch_size)
+    beta_gradient = np.array([0., 0.])
+
+    finished = False
+    count = 0
+    max_count = 1000
+    eps = 1e-4
+    while not finished and count < max_count:
+        for i in xrange(batch_size):
+            beta_gradient[0] += (
+                (1 / (1 + np.exp(
+                    x_batch[i] * current_beta[1] + current_beta[0]))) -
+                (1 / (1 + np.exp(-1 *
+                                 (current_beta[0] + current_beta[1] * (
+                                     current_mu + z_batch[i]))))))
+            beta_gradient[1] += (
+                (x_batch[i] / (1 + np.exp(
+                    x_batch[i] * current_beta[1] + current_beta[0]))) -
+                ((current_mu + z_batch[i]) / (1 + np.exp(-1 *
+                                                         (current_beta[0] +
+                                                          current_beta[1] * (
+                                                          current_mu +
+                                                          z_batch[i]))))))
+
+        beta_gradient /= batch_size
+        updated_beta = current_beta + beta_gradient
+
+        value_fn_current_beta = evaluate_value_fn(current_beta, current_mu,
+                                                  x_batch, z_batch, batch_size)
+        value_fn_updated_beta = evaluate_value_fn(updated_beta, current_mu,
+                                                  x_batch, z_batch, batch_size)
+
+        if (value_fn_updated_beta - value_fn_current_beta) < eps:
+            finished = True
+        else:
+            current_beta = updated_beta
+        count += 1
+        if count % 100 == 0:
+            print 'Discriminator update count: {}'.format(count)
+    return current_beta
 
 
-def update_generator(z_labeled, current_beta, current_mu, batch_size):
+def update_generator(current_beta, current_mu, batch_size):
     """
     Performs one gradient update on the normal mu parameter.
 
     Args:
-        z_labeled: Noise data array of size (data_size, 2), where each element
-           [z, 0] indicates value x of class 0.
         current_beta: The latest beta parameter value.
         current_mu: The latest mu parameter value.
         batch_size: Number of points to sample from data.
@@ -86,14 +89,81 @@ def update_generator(z_labeled, current_beta, current_mu, batch_size):
     Returns:
         updated_mu: The mu parameter value, after gradient update.
     """
-    z_batch = [i[0] for i in sample_batch(batch_size, z_labeled)]
+    eps = 1e-5
+    z_batch = np.random.normal(0, 1, batch_size)
     mu_gradient = 0
     for i in xrange(batch_size):
-        mu_gradient -= (-current_beta / (1 + np.exp(-current_beta * (
-            current_mu + z_batch[i]))))
+        mu_gradient += (-current_beta[1] / (
+            1 + np.exp(
+                -1 * (current_beta[0] + current_beta[1] * (current_mu +
+                                                           z_batch[i])))))
     mu_gradient /= batch_size
-    updated_mu = current_mu + mu_gradient
-    return updated_mu
+    #updated_mu = current_mu - mu_gradient
+    #return updated_mu
+
+    # Calibrate step for mu.
+    finished = False
+    count = 0
+    max_count = 10
+    while not finished and count < max_count:
+        value_fn_current_mu = evaluate_value_fn_second_term(
+            current_beta, current_mu, z_batch, batch_size)
+        value_fn_updated_mu = evaluate_value_fn_second_term(
+            current_beta, current_mu - mu_gradient, z_batch, batch_size)
+        print 'Delta on value: {}'.format(value_fn_updated_mu -
+                                          value_fn_current_mu)
+        if value_fn_updated_mu >= value_fn_current_mu:
+            mu_gradient /= 2
+        else:
+            current_mu -= mu_gradient
+            finished = True
+        count += 1
+    return current_mu
+
+
+def evaluate_value_fn(current_beta, current_mu, x_batch, z_batch, batch_size):
+    """
+    Evaluates value function.
+
+    Args:
+        current_beta: The latest beta parameter value.
+        current_mu: The latest mu parameter value.
+        x_batch: Random sample, with replacement, from true data.
+        z_batch: Random sample, with replacement, from noise data.
+        batch_size: Number of points to sample from data.
+
+    Returns:
+         value: Value of value function.
+    """
+    value = 0.0
+    for i in xrange(batch_size):
+        value += np.log(discriminate_datapoint(x_batch[i], current_beta))
+        value += np.log(1 - discriminate_datapoint(
+            generate_from_noise(z_batch[i], current_mu), current_beta))
+    value /= batch_size
+    return value
+
+
+def evaluate_value_fn_second_term(current_beta, current_mu, z_batch,
+                                  batch_size):
+    """
+    Evaluates only the second term of the value function.
+
+    Args:
+        current_beta: The latest beta parameter value.
+        current_mu: The latest mu parameter value.
+        z_batch: Random sample, with replacement, from noise data.
+        batch_size: Number of points to sample from data.
+
+    Returns:
+         value: Value of value function.
+    """
+    value = 0.0
+    for i in xrange(batch_size):
+        value += np.log(1 - discriminate_datapoint(
+            generate_from_noise(z_batch[i], current_mu), current_beta))
+    value /= batch_size
+    return value
 
 
 def generate_from_noise(noise, current_mu):
@@ -109,6 +179,22 @@ def generate_from_noise(noise, current_mu):
     """
     generated_datapoint = current_mu + noise
     return generated_datapoint
+
+
+def discriminate_datapoint(datapoint, current_beta):
+    """
+    Produces probability of being true data, using logistic model.
+
+    Args:
+        datapoint: True or generated datapoint.
+        current_beta: The latest beta parameter value.
+
+    Returns:
+        probability_true_data: Probability of being from the true data.
+    """
+    probability_true_data = (
+        1 / (1 + np.exp(-1 * (datapoint * current_beta[1] + current_beta[0]))))
+    return probability_true_data
 
 
 def sample_batch(batch_size, data):
@@ -132,68 +218,102 @@ def sample_batch(batch_size, data):
     return batch
 
 
-def run_one_learning_iteration(num_consecutive_discriminator_updates,
-                               x_labeled, z_labeled, current_beta,
-                               current_mu, batch_size):
+def run_one_learning_iteration(current_beta, current_mu, batch_size):
     """
     Performs several discriminator updates, and one generator update.
 
     Args:
-        num_consecutive_discriminator_updates: Count for discriminator updates.
-        x_labeled: True data array of size (data_size, 2), where each element
-          [x, 1] indicates value x of class 1.
-        z_labeled: Noise data array of size (data_size, 2), where each element
-           [z, 0] indicates value x of class 0.
         current_beta: The latest beta parameter value.
         current_mu: The latest mu parameter value.
         batch_size: Number of points to sample from data.
 
     Returns:
-        current_beta: The latest beta parameter value.
-        current_mu: The latest mu parameter value.
+        updated_beta: The latest beta parameter value.
+        updated_mu: The latest mu parameter value.
     """
     # Perform several discriminator updates.
-    for _ in itertools.repeat(None, num_consecutive_discriminator_updates):
-        current_beta = update_discriminator(x_labeled, z_labeled, current_beta,
-                                            current_mu, batch_size)
+    updated_beta = update_discriminator(current_beta, current_mu, batch_size)
+
     # Perform one generator update.
-    current_mu = update_generator(z_labeled, current_beta, current_mu,
-                                  batch_size)
-    return current_beta, current_mu
+    updated_mu = update_generator(current_beta, current_mu, batch_size)
+
+    print 'Updated mu, beta: {}, {}'.format(updated_mu, updated_beta)
+    return updated_beta, updated_mu
+
+
+def graph_results(mu_0, current_beta, current_mu, data_size):
+    """
+    Shows results.
+
+    Args:
+        mu_0: The initial normal model mean parameter.
+        current_beta: The latest beta parameter value.
+        current_mu: The latest mu parameter value.
+        data_size: Number of data points in original true dataset.
+
+    Returns:
+        None
+    """
+    x = np.random.normal(5, 1, data_size)
+    z = np.random.normal(0, 1, data_size)
+
+    plt.style.use('ggplot')
+    fig = plt.figure(1)
+    fig.suptitle('Fixed-scale Univariate Normal Generator, Logistic '
+                 'Discriminator', size=14)
+
+    ax1 = plt.subplot(211)
+    plt.title(r'Data (gray): $N(5, 1)$. Discriminator (blue).', size=10)
+
+    # Histogram and density of true data.
+    count_x, bins_x, ignored_x = plt.hist(x, 30, normed=True, color='gray')
+    plt.plot(bins_x, 1 / (1 * np.sqrt(2 * np.pi)) *
+             np.exp(- (bins_x - 5) ** 2 / (2 * 1 ** 2)),
+             linewidth=1, color='gray')
+    # Histogram and density of noise data.
+    count_z, bins_z, ignored_z = plt.hist(z, 30, normed=True, color='blue')
+    plt.plot(bins_z, 1 / (1 * np.sqrt(2 * np.pi)) *
+             np.exp(- (bins_z - mu_0) ** 2 / (2 * 1 ** 2)),
+             linewidth=1, color='blue')
+
+    plt.subplot(212, sharex=ax1)
+
+    # Histogram and density of true data.
+    _, bins_x, _ = plt.hist(x, 30, normed=True, color='gray')
+    plt.plot(bins_x, 1 / (1 * np.sqrt(2 * np.pi)) *
+             np.exp(- (bins_x - 5) ** 2 / (2 * 1 ** 2)),
+             linewidth=1, color='gray')
+    # Histogram and density of generated data.
+    generated_x = np.random.normal(current_mu, 1, data_size)
+    _, bins_generated_x, _ = plt.hist(generated_x, 30, normed=True,
+                                      color='blue')
+    plt.plot(bins_generated_x, 1 / (1 * np.sqrt(2 * np.pi)) *
+             np.exp(- (bins_generated_x - current_mu) ** 2 / (2 * 1 ** 2)),
+             linewidth=1, color='blue')
+
+    # Discriminator.
+    x_space = np.linspace(-10, 15, 50)
+    plt.plot(x_space, 1 / (1 + np.exp(-1 * (current_beta[0] + current_beta[1]
+                                            * x_space))), color="blue")
+
+    plt.show()
 
 
 def main():
-    data_size = 100
-    batch_size = 80
-    num_consecutive_discriminator_updates = 5
-    num_learning_iterations = 50
+    data_size = 1000
+    batch_size = 800
+    num_learning_iterations = 100
 
-    x_labeled, z_labeled = initialize_data(data_size)
-    current_beta, current_mu = initialize_model_params(data_size)
+    beta_0, mu_0 = initialize_model_params(data_size)
+    current_beta, current_mu = beta_0, mu_0
 
     for _ in itertools.repeat(None, num_learning_iterations):
-        print 'Current mu, beta: {}, {}'.format(current_mu, current_beta)
-        current_beta, current_mu = run_one_learning_iteration(
-            num_consecutive_discriminator_updates, x_labeled, z_labeled,
-            current_beta, current_mu, batch_size)
+        current_beta, current_mu = run_one_learning_iteration(current_beta,
+                                                              current_mu,
+                                                              batch_size)
 
-    print 'Current mu, beta: {}, {}'.format(current_mu, current_beta)
+    graph_results(mu_0, current_beta, current_mu, data_size)
+
 
 if __name__ == "__main__":
     main()
-
-"""
-# Plot results of each iteration.
-import matplotlib.pyplot as plt
-
-# True data x.
-count, bins, ignored = plt.hist(x, 30, normed=True)
-plt.plot(bins, 1/ (sigma * np.sqrt(2 * np.pi)) *
-         np.exp(- (bins - mu) ** 2 / (2 * sigma ** 2)),
-         linewidth=2, color='r')
-
-count_z, bins_z, ignored_z = plt.hist(z, 30, normed=True)
-plt.plot(bins_z, 1 / (1 * np.sqrt(2 * np.pi)) *
-         np.exp(- (bins_z - 0) ** 2 / (2 * 1 ** 2)),
-         linewidth=2, color='b')
-"""
