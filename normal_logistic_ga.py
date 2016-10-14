@@ -183,6 +183,7 @@ if __name__ == "__main__":
     main()
 
 """
+# Plot results of each iteration.
 import matplotlib.pyplot as plt
 
 # True data x.
