@@ -9,6 +9,13 @@ import matplotlib.pyplot as plt
 from normal_logistic_ga_utils import evaluate_value_fn, discriminate_datapoint,\
     safe_ln, evaluate_value_fn_second_term, generate_from_noise
 
+COLORS = {'lightgreen': '#BDDFB3',
+          'blue': '#2BAA9C',
+          'black': '#2F2E2E',
+          'red': '#85403B',
+          'green': '#456F3F',
+          'std_red': 'red'}
+
 
 def initialize_model_params():
     """
@@ -110,9 +117,13 @@ def update_generator(current_beta, current_mu, batch_size, true_data_mean,
     while not finished and count < max_count:
         count += 1
 
-        candidate_mu = current_mu - 0.5*np.sign(mu_gradient)*(
-            .99**global_iteration)
-        #candidate_mu = current_mu - mu_gradient
+        # Choose gradient step method.
+        option = 1
+        if option == 1:
+            candidate_mu = current_mu - 0.1*np.sign(mu_gradient)*(
+                .99**global_iteration)
+        elif option == 2:
+            candidate_mu = current_mu - mu_gradient
         value_fn_current_mu = evaluate_value_fn_second_term(
             current_beta, current_mu, z_batch, batch_size, true_data_mean)
         value_fn_candidate_mu = evaluate_value_fn_second_term(
@@ -122,17 +133,20 @@ def update_generator(current_beta, current_mu, batch_size, true_data_mean,
 
         current_mu = candidate_mu
         finished = True
-        # Try scaling back the step size, to see if a fraction will reduce
-        # value function.
-        # if value_delta >= 0:
-        #     print '    ...tried with mu: {} - {}, but not better...'.format(
-        #         round(current_mu, 2), round(mu_gradient, 2))
-        #     mu_gradient *= 0.8
-        # else:
-        #     print '    Good step with mu: {} - {}.'.format(
-        #         round(current_mu, 2), round(mu_gradient, 2))
-        #     current_mu = candidate_mu
-        #     finished = True
+
+        step_scaling = 0
+        if step_scaling:
+            # Try scaling back the step size, to see if a fraction will reduce
+            # value function.
+            if value_delta >= 0:
+                print '    ...tried with mu: {} - {}, but not better...'.format(
+                    round(current_mu, 2), round(mu_gradient, 2))
+                mu_gradient *= 0.8
+            else:
+                print '    Good step with mu: {} - {}.'.format(
+                    round(current_mu, 2), round(mu_gradient, 2))
+                current_mu = candidate_mu
+                finished = True
 
     return current_mu, value_delta
 
@@ -166,7 +180,8 @@ def compute_val_loglik(current_beta, current_mu, true_data_mean, batch_size):
 
 def run_one_learning_iteration(
         current_beta, current_mu, batch_size, true_data_mean, max_k_updates,
-        max_mu_updates, global_iteration, vals_logliks):
+        max_mu_updates, global_iteration, optimal_vals_logliks_mus,
+        within_run_vals_logliks):
     """
     Performs several discriminator updates, and one generator update.
 
@@ -178,14 +193,17 @@ def run_one_learning_iteration(
         max_k_updates: See name.
         max_mu_updates: See name.
         global_iteration: Index of global iterations.
-        vals_logliks: Array of values and log likelihoods for each (mu,
-          beta) pair.
+        optimal_vals_logliks_mus: Array of values, log likelihoods, and mus for
+          each (mu, beta) pair.
+        within_run_vals_logliks: Array of arrays, where each element is a
+          list of value-loglikelihood pairs, for a grid of mus and a fixed
+          beta, for one global iteration.
 
     Returns:
         current_beta: The latest beta parameter value.
         current_mu: The latest mu parameter value.
-        vals_logliks: Array of values and log likelihoods for each (mu,
-          beta) pair.
+        optimal_vals_logliks_mus: Array of values, log likelihoods, and mus for
+          each (mu, beta) pair.
     """
     count = 0
     while count < max_k_updates:
@@ -204,17 +222,25 @@ def run_one_learning_iteration(
 
     val_loglik = compute_val_loglik(current_beta, current_mu, true_data_mean,
                                     batch_size)
-    vals_logliks.append(val_loglik)
+    val_loglik_mu = val_loglik + (current_mu,)
+    optimal_vals_logliks_mus.append(val_loglik_mu)
+
+    num_within_run_graphs = 30
+    within_run_vals_logliks.append([
+        compute_val_loglik(current_beta, m, true_data_mean, batch_size) for m
+        in np.linspace(-3, true_data_mean + 3, num_within_run_graphs)])
+
 
     print 'UPDATING BETA...\n    beta PRE: {}'.format(current_beta)
     print '    beta POST: {}'.format(updated_beta)
     print 'UPDATING MU...\n    mu PRE: {}'.format(current_mu)
     print '    mu POST: {}'.format(updated_mu)
-    return current_beta, current_mu, vals_logliks
+    return current_beta, current_mu, optimal_vals_logliks_mus, \
+           within_run_vals_logliks
 
 
 def graph_results(mu_0, true_data_mean, current_beta, current_mu, data_size,
-                  x, iter, file_timestamp):
+                  x, global_iteration, file_timestamp):
     """
     Shows status of discriminator and generator, relative to true data.
 
@@ -227,7 +253,7 @@ def graph_results(mu_0, true_data_mean, current_beta, current_mu, data_size,
         current_mu: The latest mu parameter value.
         data_size: Number of data points in original true dataset.
         x: The original data set.
-        iter: Iteration, passed for filenaming.
+        global_iteration: Iteration, passed for filenaming.
         file_timestamp: Datetime used for timestamping all figure outputs.
 
     Returns:
@@ -238,44 +264,49 @@ def graph_results(mu_0, true_data_mean, current_beta, current_mu, data_size,
     fig = plt.figure()
     fig.suptitle(
         'Fixed-scale Univariate Normal Generator, Logistic '
-        'Discriminator', size=14)
+        'Discriminator:\nIteration {}'.format(global_iteration), size=14)
 
     # Histogram and density of TRUE data.
     ax1 = fig.add_subplot(211)
-    plt.title(r'Data (gray). Discriminator (blue).', size=10)
-    count_x, bins_x, ignored_x = plt.hist(x, 30, normed=True, color='gray')
+    count_x, bins_x, ignored_x = plt.hist(x, 30, normed=True, color=COLORS[
+        'lightgreen'], label='Data')
     plt.plot(bins_x, 1 / (1 * np.sqrt(2 * np.pi)) *
              np.exp(- (bins_x - true_data_mean) ** 2 / (2 * 1 ** 2)),
-             linewidth=1, color='gray')
+             linewidth=1, color=COLORS['lightgreen'])
     # Histogram and density of NOISE data.
     z = np.random.normal(0, 1, data_size)
-    count_z, bins_z, ignored_z = plt.hist(z, 30, normed=True, color='blue')
+    count_z, bins_z, ignored_z = plt.hist(z, 30, normed=True,
+                                          color=COLORS['blue'], label='Noise')
     plt.plot(bins_z, 1 / (1 * np.sqrt(2 * np.pi)) *
              np.exp(- (bins_z - mu_0) ** 2 / (2 * 1 ** 2)),
-             linewidth=1, color='blue')
+             linewidth=1, color=COLORS['blue'])
+    ax1.legend(loc='upper left')
 
     ax2 = fig.add_subplot(212, sharex=ax1)
 
-    _, bins_x, _ = ax2.hist(x, 30, normed=True, color='gray')
+    _, bins_x, _ = ax2.hist(x, 30, normed=True, color=COLORS['lightgreen'],
+                            label='Data')
     plt.plot(bins_x, 1 / (1 * np.sqrt(2 * np.pi)) *
              np.exp(- (bins_x - true_data_mean) ** 2 / (2 * 1 ** 2)),
-             linewidth=1, color='gray')
+             linewidth=1, color=COLORS['lightgreen'])
 
     # Histogram and density of GENERATED data.
     generated_x = np.random.normal(current_mu, 1, data_size)
     _, bins_generated_x, _ = ax2.hist(generated_x, 30, normed=True,
-                                      color='blue')
+                                      color=COLORS['blue'], label='Generated')
     plt.plot(bins_generated_x, 1 / (1 * np.sqrt(2 * np.pi)) *
              np.exp(- (bins_generated_x - current_mu) ** 2 / (2 * 1 ** 2)),
-             linewidth=1, color='blue')
+             linewidth=1, color=COLORS['blue'])
 
     # Discriminator.
     x_space = np.linspace(- 5, true_data_mean + 5, 50)
     plt.plot(x_space,
              1 / (1 + np.exp(-1 * (current_beta[0] + current_beta[1]
-                                   * x_space))), color="blue")
+                                   * x_space))), color=COLORS['black'],
+             label='Discriminator')
 
-    plt.savefig('{}-fig{}.png'.format(file_timestamp, iter))
+    ax2.legend(loc='upper left')
+    plt.savefig('{}-fig{}.png'.format(file_timestamp, global_iteration))
 
 
 def graph_traceplots(true_data_mean, traceplot_beta, traceplot_mu,
@@ -300,48 +331,90 @@ def graph_traceplots(true_data_mean, traceplot_beta, traceplot_mu,
 
     ax1 = plt.subplot(311)
     plt.title(r'Mu', size=10)
-    plt.plot(traceplot_mu, color='blue')
+    plt.plot(traceplot_mu, color=COLORS['blue'])
     plt.axhline(y=true_data_mean, xmin=0, xmax=1, hold=None,
                 color='gray', label='True mean')
-    ax1.legend(loc='best')
+    ax1.legend(loc='upper left')
 
     ax2 = plt.subplot(312)
     plt.title(r'Mu Steps', size=10)
-    plt.plot(np.diff(traceplot_mu), color='red')
+    plt.plot(np.diff(traceplot_mu), color=COLORS['blue'])
 
     ax3 = plt.subplot(313)
     plt.title(r'Beta', size=10)
-    plt.plot(np.array(traceplot_beta)[:, 0], label='b0')
-    plt.plot(np.array(traceplot_beta)[:, 1], label='b1')
-    ax3.legend(loc='best')
+    plt.plot(np.array(traceplot_beta)[:, 0], color=COLORS['blue'],
+             label='b0')
+    plt.plot(np.array(traceplot_beta)[:, 1], color=COLORS['black'],
+             label='b1')
+    ax3.legend(loc='upper left')
 
     plt.savefig('{}-traceplot'.format(file_timestamp))
     if display:
         plt.show()
 
 
-def graph_vals_logliks(vals_logliks):
+def graph_vals_logliks(optimal_vals_logliks_mus, within_run_vals_logliks):
     """
-    Plot the value function value and the log likelihood of the generated
-    data, for the mu-beta pair of each global iteration.
+    For each global iteration, plot the value function value and the log
+    likelihood of the generated data, for that iteration's mu-beta pair.
+    Also, within each iteration, plot the value-loglikelihood values for the
+    current beta, along a grid of mu values.
 
     Args:
-        vals_logliks: Array of values and log likelihoods for each (mu,
+        optimal_vals_logliks: Array of values, log likelihoods, and mus for
+        each (mu,
           beta) pair.
+        within_run_vals_logliks: Array of arrays, where each element is a
+        list of value-loglikelihood pairs, and current_mu, for a grid of mus
+          and a fixed beta, for one global iteration.
 
     Returns:
         None
     """
+    # Plot single graph for optimal mu-beta pairs.
     plt.style.use('ggplot')
     fig = plt.figure()
     fig.suptitle('Value vs. Log Likelihood for Generated Data Against True '
-                 'Data Distribution', size=14)
-    vals = [v for (v, l) in vals_logliks]
-    logliks = [l for (v, l) in vals_logliks]
+                 'Data Distribution: Optimal Pairs', size=14)
+    ax = fig.add_subplot(111)
+    vals = [v for (v, l, m) in optimal_vals_logliks_mus]
+    logliks = [l for (v, l, m) in optimal_vals_logliks_mus]
+    mus = [m for (v, l, m) in optimal_vals_logliks_mus]
     t = np.arange(len(vals))
-    plt.scatter(vals, logliks, c=t, cmap='cool', s=50)
+    sc = ax.scatter(vals, logliks, c=t, cmap='cool', s=50)
+    for i, txt in enumerate(mus):
+        ax.annotate(round(txt, 2), (vals[i], logliks[i]))
+    cb = plt.colorbar(sc)
+    cb.set_label('Iter', labelpad=-31, y=1.05, rotation=0)
     plt.xlabel('Value')
     plt.ylabel('Log Likelihood')
+
+    # Plot within-run, gridded, mu-beta graphs for each iteration.
+    fig = plt.figure()
+    fig.suptitle('Value vs. Log Likelihood: Gridded Pairs, Per Iteration',
+                 size=14)
+    num_runs = len(optimal_vals_logliks_mus)
+    dims = np.ceil(np.sqrt(num_runs))
+    for run_index in range(num_runs):
+        optimal_val = optimal_vals_logliks_mus[run_index][0]
+        optimal_loglik = optimal_vals_logliks_mus[run_index][1]
+        optimal_mu = optimal_vals_logliks_mus[run_index][2]
+
+        ax = plt.subplot(dims, dims, run_index + 1)
+        plt.title(r'Iter: {}'.format(run_index), size=10)
+        vals_logliks = within_run_vals_logliks[run_index]
+        vals = [v for (v, l) in vals_logliks]
+        logliks = [l for (v, l) in vals_logliks]
+        ax.scatter(vals, logliks, c=COLORS['lightgreen'], s=30)
+        ax.scatter(optimal_val, optimal_loglik, c='red', s=50)
+        ax.annotate(round(optimal_mu, 2), (optimal_val, optimal_loglik))
+        plt.setp(ax.get_xticklabels(), visible=False)
+        plt.setp(ax.get_yticklabels(), visible=False)
+        if run_index == 0:
+            plt.xlabel('Value')
+            plt.ylabel('Log Likelihood')
+            plt.setp(ax.get_xticklabels(), visible=True)
+            plt.setp(ax.get_yticklabels(), visible=False)
 
 
 def main():
@@ -349,11 +422,11 @@ def main():
     file_timestamp = '{:%Y%m%d-%H%M%S}'.format(datetime.datetime.now())
 
     # Adjustable procedural parameters.
-    true_data_mean = 8
+    true_data_mean = 6
     data_size = 1000
-    batch_size = 10
-    num_training_iterations = 200
-    max_k_updates = 200
+    batch_size = 20
+    num_training_iterations = 100
+    max_k_updates = 1000
     max_mu_updates = 1
     display = True
 
@@ -364,21 +437,25 @@ def main():
     traceplot_beta = []
     traceplot_mu = []
     vals_logliks = []
+    within_run_vals_logliks = []
 
-    for iter in range(num_training_iterations):
-        print '\n\n----------Global learning iter {}----------'.format(iter)
+    for global_iteration in range(num_training_iterations):
+        print '\n\n-----Global learning iter {}-----'.format(global_iteration)
+
         # graph_results(mu_0, true_data_mean, current_beta, current_mu, data_size,
-        #               x, iter, file_timestamp)
+        #               x, global_iteration, file_timestamp)
 
-        current_beta, current_mu, vals_logliks = run_one_learning_iteration(
-            current_beta, current_mu, batch_size, true_data_mean, max_k_updates,
-            max_mu_updates, iter, vals_logliks)
+        current_beta, current_mu, vals_logliks, within_run_vals_logliks = \
+            run_one_learning_iteration(current_beta, current_mu, batch_size,
+                                       true_data_mean, max_k_updates,
+                                       max_mu_updates, global_iteration,
+                                       vals_logliks, within_run_vals_logliks)
         traceplot_beta.append(current_beta)
         traceplot_mu.append(current_mu)
 
     graph_traceplots(true_data_mean, traceplot_beta, traceplot_mu,
                      file_timestamp)
-    graph_vals_logliks(vals_logliks)
+    graph_vals_logliks(vals_logliks, within_run_vals_logliks)
 
     print '\n\nTime Elapsed: {}'.format(time.time() - start)
     if display:
