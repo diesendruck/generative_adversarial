@@ -7,6 +7,14 @@ import time
 from datetime import datetime
 
 
+def next_n_from_gen(n, gen):
+    import numpy as np
+    return np.vstack(list(gen.next() for _ in range(n)))
+
+
+def unique_arrays(arr): return np.vstack({tuple(row) for row in arr})
+
+
 def visualize(plot_dict, var_set, runs_per_theta, num_unique_thetas):
     """Plot test figures."""
     # Create plot with subplots.

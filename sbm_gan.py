@@ -7,9 +7,11 @@ import numpy as np
 from scipy.stats import norm
 from collections import namedtuple
 import matplotlib.pyplot as plt
+from binary_classifier_nn import run_binary_classifier_nn
 from sbm_gan_utils import rbern, sym_matrix, evaluate_value_fn, \
-    discriminate_datapoint,\
-    safe_ln, evaluate_value_fn_second_term, generate_from_noise
+    discriminate_datapoint, safe_ln, evaluate_value_fn_second_term, \
+    generate_from_noise
+
 
 COLORS = {'lightgreen': '#BDDFB3',
           'blue': '#2BAA9C',
@@ -436,10 +438,10 @@ def sample_adjacency_matrix_from_SBM(true_SBM, loops=False, directed=False):
       adjacency_matrix: A 2D array, representing the link network between the
         num_nodes nodes.
     """
-    B = true_SBM.B
-    PI = true_SBM.PI
-    K = true_SBM.K
-    n = true_SBM.n
+    B = true_SBM.affinity
+    PI = true_SBM.distribution
+    K = true_SBM.num_clusters
+    n = true_SBM.num_nodes
 
     if len(B) != len(PI):
         raise ValueError('Dimensions of cluster affinity matrix and cluster '
@@ -463,45 +465,110 @@ def sample_adjacency_matrix_from_SBM(true_SBM, loops=False, directed=False):
 
     if not directed:
         adjacency_matrix = sym_matrix(adjacency_matrix)
-    if loops:
+    if not loops:
         np.fill_diagonal(adjacency_matrix, 0)
     return adjacency_matrix
+
+
+def sample_random_adjacency_matrix(num_nodes):
+    """
+    Samples a random network, with zero-diagonal, and symmetric links.
+
+    Args:
+      num_nodes: Number of nodes in each network.
+
+    Returns:
+      rand_adjacency_matrix: A 2D array of links among num_nodes nodes.
+    """
+    rand_adjacency_matrix = sym_matrix(
+        [[rbern(0.5) for _ in range(num_nodes)] for _ in range(num_nodes)])
+    np.fill_diagonal(rand_adjacency_matrix, 0)
+    return rand_adjacency_matrix
+
+
+def initialize_data_with_labels(num_nodes):
+    """
+    Creates a balanced, shuffled, labeled data set of rows from adjacency
+    matrices from two network models: a known SBM and a random network.
+
+    Args:
+      num_nodes: Number of nodes in each network.
+
+    Returns:
+      chunk: Named tuple, with a chunk of data (adjacency matrix rows) and their
+        associated labels.
+    """
+    SBM_info = namedtuple('SBM_info', ['affinity', 'distribution',
+                                       'num_clusters', 'num_nodes'])
+    affinity = [[0.9, 0.1, 0.1],
+                [0.1, 0.9, 0.1],
+                [0.1, 0.1, 0.9]]
+    distribution = np.asarray([0.8, 0.1, 0.1])
+    num_clusters = len(distribution)
+    verbose = 0
+    if verbose:
+        print ('Affinity:\n{}\nDistribution: {}\nnum_clusters: {}\nnum_nodes: {'
+               '}\n\n').format(affinity, distribution, num_clusters, num_nodes)
+
+    true_SBM = SBM_info(affinity, distribution, num_clusters, num_nodes)
+    true_adjacency_matrix = sample_adjacency_matrix_from_SBM(true_SBM)
+    rand_adjacency_matrix = sample_random_adjacency_matrix(num_nodes)
+
+    display = False
+    if display:
+        fig, axes = plt.subplots(2, 1)
+        axes.flatten()
+        axes[0].imshow(true_adjacency_matrix, interpolation='none', cmap='GnBu')
+        axes[0].set_title('True SBM')
+        axes[1].imshow(rand_adjacency_matrix, interpolation='none', cmap='GnBu')
+        axes[1].set_title('Random Undirected Linkages')
+        plt.show()
+
+    true_rows_with_labels = np.array(
+        [[row, np.array([0., 1.])] for row in true_adjacency_matrix])
+    rand_rows_with_labels = np.array(
+        [[row, np.array([1., 0.])] for row in rand_adjacency_matrix])
+    data_with_labels = np.vstack((true_rows_with_labels, rand_rows_with_labels))
+    np.random.shuffle(data_with_labels)
+
+    DataLabels = namedtuple('DataLabels', ['data', 'labels'])
+    chunk = DataLabels(np.vstack(data_with_labels[:, 0]),
+                       np.vstack(data_with_labels[:, 1]))
+    return chunk
 
 
 def main():
     start = time.time()
     file_timestamp = '{:%Y%m%d-%H%M%S}'.format(datetime.datetime.now())
 
-    # Define parameters of true SBM:
-    #   B: Cluster affinity matrix.
-    #   PI: Cluster distribution.
-    #   K: Number of clusters.
-    #   n: Number of nodes.
-    SBM_info = namedtuple('SBM_info', ['B', 'PI', 'K', 'n'])
+    data_samples = []
+    label_samples = []
+    for _ in range(2500):
+        train_data_with_labels = initialize_data_with_labels(num_nodes=10)
+        data_samples.append(train_data_with_labels.data)
+        label_samples.append(train_data_with_labels.labels)
+    DataLabels = namedtuple('DataLabels', ['data', 'labels'])
+    train_data_with_labels = DataLabels(np.vstack(data_samples),
+                                        np.vstack(label_samples))
 
-    B = [[0.9, 0.1, 0.1],
-         [0.1, 0.9, 0.1],
-         [0.1, 0.1, 0.9]]
-    PI = np.asarray([0.8, 0.1, 0.1])
-    K = len(PI)
-    n = 100
-    true_SBM = SBM_info(B, PI, K, n)
-    true_adjacency_matrix = sample_adjacency_matrix_from_SBM(true_SBM)
-    rand_adjacency_matrix = sym_matrix([[rbern(0.5) for j in range(n)] for i in
-                                        range(n)])
+    data_samples = []
+    label_samples = []
+    for _ in range(500):
+        test_data_with_labels = initialize_data_with_labels(num_nodes=10)
+        data_samples.append(test_data_with_labels.data)
+        label_samples.append(test_data_with_labels.labels)
+    DataLabels = namedtuple('DataLabels', ['data', 'labels'])
+    test_data_with_labels = DataLabels(np.vstack(data_samples),
+                                        np.vstack(label_samples))
 
-    # Plot adjacency matrix from true SBM, and plot random connections.
-    fig, axes = plt.subplots(2, 1)
-    axes.flatten()
+    TrainTestData = namedtuple('TrainTestData', ['train', 'test'])
+    data = TrainTestData(train_data_with_labels, test_data_with_labels)
 
-    axes[0].imshow(true_adjacency_matrix, interpolation='none', cmap='GnBu')
-    axes[0].set_title('hey')
-    axes[1].imshow(rand_adjacency_matrix, interpolation='none', cmap='GnBu')
-    axes[1].set_title('heyuu')
-    plt.show()
+    run_binary_classifier_nn(data)
+    print '\n\nTime Elapsed: {}'.format(time.time() - start)
 
-    discriminator = train_binary_classifier_nn(true_adjacency_matrix,
-                                               rand_adjacency_matrix)
+    #discriminator = train_binary_classifier_nn(true_adjacency_matrix,
+    #                                           rand_adjacency_matrix)
 
     # Adjustable procedural parameters.
     # true_data_mean = 6
